@@ -14,6 +14,7 @@ The following program exposes functionality in the Block Engine's searcher API.
 
 ```bash
 git submodule update --init --recursive
+rustup override set 1.78.0
 cargo b --release --bin jito-searcher-cli
 ```
 

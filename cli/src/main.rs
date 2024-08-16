@@ -1,5 +1,5 @@
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
-
+use solana_sdk::bs58;
 use clap::{Parser, Subcommand};
 use env_logger::TimestampPrecision;
 use futures_util::StreamExt;
@@ -94,6 +94,10 @@ enum Commands {
         /// One of the tip accounts, see https://jito-foundation.gitbook.io/mev/mev-payment-and-distribution/on-chain-addresses
         #[clap(long, required = true)]
         tip_account: Pubkey,
+    
+        /// Custom transaction hashes to include in the bundle (optional)
+        #[clap(long, required = true, value_delimiter = ',')]
+        custom_tx_hashes: Vec<String>,
     },
 }
 
@@ -241,6 +245,7 @@ where
             num_txs,
             lamports,
             tip_account,
+            custom_tx_hashes,
         } => {
             let payer_keypair = read_keypair_file(&payer).expect("reads keypair at path");
             let rpc_client = RpcClient::new_with_commitment(rpc_url, CommitmentConfig::confirmed());
@@ -279,12 +284,22 @@ where
                 sleep(Duration::from_millis(500)).await;
             }
 
-            // build + sign the transactions
+            // Deserialize custom transactions
+            let custom_txs: Vec<VersionedTransaction> = custom_tx_hashes
+            .iter()
+            .filter_map(|hash| {
+                let tx_bytes = bs58::decode(hash).into_vec().ok()?;
+                bincode::deserialize(&tx_bytes).ok()
+            })
+            .collect();
+
+            // Build and sign the transactions
             let blockhash = rpc_client
                 .get_latest_blockhash()
                 .await
                 .expect("get blockhash");
-            let txs: Vec<_> = (0..num_txs)
+
+            let memo_and_transfer_txs: Vec<VersionedTransaction> = (0..num_txs)
                 .map(|i| {
                     VersionedTransaction::from(Transaction::new_signed_with_payer(
                         &[
@@ -298,14 +313,45 @@ where
                 })
                 .collect();
 
+            // Combine custom transactions with memo and transfer transactions
+            let mut all_txs = custom_txs;
+            all_txs.extend(memo_and_transfer_txs);
+
             send_bundle_with_confirmation(
-                &txs,
+                &all_txs,
                 &rpc_client,
                 &mut client,
                 &mut bundle_results_subscription,
             )
             .await
             .expect("Sending bundle failed");
+            // // build + sign the transactions
+            // let blockhash = rpc_client
+            //     .get_latest_blockhash()
+            //     .await
+            //     .expect("get blockhash");
+            // let txs: Vec<_> = (0..num_txs)
+            //     .map(|i| {
+            //         VersionedTransaction::from(Transaction::new_signed_with_payer(
+            //             &[
+            //                 build_memo(format!("jito bundle {i}: {message}").as_bytes(), &[]),
+            //                 transfer(&payer_keypair.pubkey(), &tip_account, lamports),
+            //             ],
+            //             Some(&payer_keypair.pubkey()),
+            //             &[&payer_keypair],
+            //             blockhash,
+            //         ))
+            //     })
+            //     .collect();
+
+            // send_bundle_with_confirmation(
+            //     &txs,
+            //     &rpc_client,
+            //     &mut client,
+            //     &mut bundle_results_subscription,
+            // )
+            // .await
+            // .expect("Sending bundle failed");
         }
     }
 }
